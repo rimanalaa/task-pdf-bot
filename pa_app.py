@@ -53,9 +53,10 @@ REUSE_NO = "✏️ بيانات جديدة"
 LOGOS_DONE = "✅ خلصت اللوجوهات"
 LOGO_MORE = "➕ في لوجو كمان"
 RETRY = "🔁 جرّب مرة ثانية"
+SAME_TITLE = "♻️ نفس العنوان السابق"
 FRAME_YES = "🖼️ مع إطار"
 FRAME_NO = "⬜ بدون إطار"
-BUTTONS = (SKIP, DONE, UNDO, REUSE_YES, REUSE_NO, LOGOS_DONE, LOGO_MORE, RETRY, FRAME_YES, FRAME_NO)
+BUTTONS = (SKIP, DONE, UNDO, REUSE_YES, REUSE_NO, LOGOS_DONE, LOGO_MORE, RETRY, SAME_TITLE, FRAME_YES, FRAME_NO)
 MAX_IMAGES = 60
 MAX_LOGOS = 3
 
@@ -231,9 +232,15 @@ def ask_logo(chat, u):
 def ask_title(chat, u, prefix=""):
     u["state"] = "TITLE"
     prev = (u.get("draft") or {}).get("title")
-    rows = [[prev], [SKIP]] if prev else [[SKIP]]
-    say(chat, prefix + "🏷️ بدك عنوان على الغلاف؟ (مثلاً: Assignment 1 أو اسم المادة)\n"
-                       "اكتبه، أو اضغط تخطي إذا ما بدك عنوان.", kb(*rows))
+    rows = [[SAME_TITLE], [SKIP]] if prev else [[SKIP]]
+    old = f"\n\nالعنوان السابق:\n{prev}" if prev else ""
+    say(chat, prefix + "🏷️ بدك عنوان على الغلاف؟\n"
+                       "بتقدر تكتب كذا سطر بنفس الرسالة، وكل سطر بينكتب لحاله بالنص. مثلاً:\n\n"
+                       "The Islamic University – Faculty of Engineering\n"
+                       "Computer Engineering Department\n"
+                       "Introduction to Computers Lab\n"
+                       "LAB#1\n\n"
+                       "أو اضغط «تخطي» إذا ما بدك عنوان." + old, kb(*rows))
 
 
 def ask_name(chat, u, prefix=""):
@@ -276,7 +283,8 @@ def start(chat, u):
 
 
 def default_name(d):
-    return "_".join(x for x in (d.get("title"), d.get("id"), d.get("name")) if x) or "task"
+    title = (d.get("title") or "").strip().splitlines()
+    return "_".join(x for x in (title[-1] if title else None, d.get("id"), d.get("name")) if x) or "task"
 
 
 def safe_name(text):
@@ -389,10 +397,13 @@ def handle(msg, u):
     if st == "TITLE":
         if fid:
             return  # extra logos from an album after the 3rd: ignore quietly
-        ok, val = optional_text(text)
+        if text == SAME_TITLE:
+            ok, val = True, u["draft"].get("title")
+        else:
+            ok, val = optional_text(text)
         if not ok:
             return say(chat, "اكتب العنوان أو اضغط تخطي.", kb([SKIP]))
-        u["draft"]["title"] = val[:60] if val else None
+        u["draft"]["title"] = val[:300] if val else None
         if u.pop("reuse", False):
             return ask_images(chat, u)
         return ask_name(chat, u)

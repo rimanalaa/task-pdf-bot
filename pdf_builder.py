@@ -48,6 +48,11 @@ def _register_fonts():
 
 
 _register_fonts()
+for _n, _b in (("Serif", "Body"), ("SerifB", "Bold")):  # Arabic glyphs inside serif text
+    pdfmetrics.registerFont(TTFont(_n, pdfmetrics.getFont(_b).face.filename))
+LATIN = {"Serif": "Times-Roman", "SerifB": "Times-Bold"}
+BLUE = (0.18, 0.45, 0.71)  # Word's classic heading blue
+BLACK = (0, 0, 0)
 
 
 def _runs(visual, font):
@@ -55,7 +60,7 @@ def _runs(visual, font):
     font, everything else (Latin, digits, punctuation) the Latin font."""
     out = []
     for ch in visual:
-        f = font if ARABIC.match(ch) else font + "L"
+        f = font if ARABIC.match(ch) else LATIN.get(font, font + "L")
         if ch == " " and out:
             f = out[-1][1]
         if out and out[-1][1] == f:
@@ -165,39 +170,31 @@ def build_pdf(out_path, name=None, student_id=None, images=(), logos=None, docto
         _frame(c, W, H, 18)
 
     rows = [(lbl, v) for lbl, v in (("By:", name), ("NO:", student_id), ("Submitted to:", doctor)) if v]
-    y = H - 85
+    lines = [ln.strip() for ln in (title or "").splitlines() if ln.strip()][:6]
+    y = H - 70
     if logos:
-        y = _logo_row(c, logos, y) - 70
+        y = _logo_row(c, logos, y, max_h=130) - 50
     else:
-        y -= 150 if rows else 280
+        y -= 110 if (rows or lines) else 280
 
-    if title:
-        size = 34 if len(title) <= 22 else 26 if len(title) <= 34 else 20
-        _centered(c, title, y, "Bold", size, INK)
-        y -= 26
-        c.setStrokeColorRGB(*ACCENT)
-        c.setLineWidth(1.5)
-        c.line(W / 2 - 70, y, W / 2 + 70, y)
-        y -= 70
-    elif logos:
-        y -= 20
+    # title: one centred line each (university / department / course / LAB#1 ...)
+    for i, ln in enumerate(lines):
+        size = 26 if len(ln) <= 14 else 20 if len(ln) <= 55 else 16
+        y -= size * 0.4 if i else 0
+        _centered(c, ln, y, "Serif", size, BLACK)
+        y -= size + 12
+    y -= 40 if lines else 0
 
-    # "By: …" / "NO: …" / "Submitted to: …" as one block, labels aligned, centred on the page
-    if rows:
-        ls, vs, gap = 17, 20, 14
-        lw = max(_width(ar(l), "Bold", ls) for l, _ in rows)
-        vw = max(_width(ar(v), "Bold", vs) for _, v in rows)
-        x0 = max(70, (W - (lw + gap + vw)) / 2)
-        y -= 10
-        for label, value in rows:
-            c.setFillColorRGB(*MUTED)
-            draw_text(c, x0, y, label, "Bold", ls)
-            c.setFillColorRGB(*INK)
-            draw_text(c, x0 + lw + gap, y, value, "Bold", vs)
-            y -= 48
+    # By: / NO: / Submitted to: — label on its own line, value under it in blue
+    for label, value in rows:
+        _centered(c, label, y, "SerifB", 19, BLACK)
+        y -= 32
+        size = 22 if len(value) <= 34 else 17
+        _centered(c, value, y, "Serif", size, BLUE)
+        y -= 62
 
     if year:
-        _centered(c, year, 66, "Bold", 15, ACCENT)
+        _centered(c, year, 70, "Serif", 18, BLACK)
     c.showPage()
 
     # ---------- solution pages ----------
