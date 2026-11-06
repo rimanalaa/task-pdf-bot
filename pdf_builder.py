@@ -2,7 +2,6 @@
 import io
 import os
 import re
-from datetime import date
 
 import arabic_reshaper
 from PIL import Image, ImageOps
@@ -119,26 +118,59 @@ def _centered(c, text, y, font, size, color):
     draw_text(c, A4[0] / 2, y, text, font, size, "center")
 
 
-def build_pdf(out_path, name, student_id, images, logo=None, doctor=None, title="حل التاسك"):
-    """images: list of raw bytes, already in the order the user sent them."""
+def _logo_row(c, logos, top, max_h=150, gap=26):
+    """Up to 3 logos side by side, centred at the top. Returns the y below the row."""
+    imgs = [_load_image(b, 900) for b in logos[:3]][::-1]  # RTL: first logo sent sits on the right
+    W = A4[0]
+    avail = W - 2 * 70
+    n = len(imgs)
+    box_w = min(190 if n == 1 else 160, (avail - gap * (n - 1)) / n)
+    # scale each logo to the common height, but never wider than its box
+    sizes = []
+    for im in imgs:
+        s = min(max_h / im.height, box_w / im.width)
+        sizes.append((im.width * s, im.height * s))
+    row_h = max(h for _, h in sizes)
+    total = sum(w for w, _ in sizes) + gap * (n - 1)
+    x = (W - total) / 2
+    for im, (w, h) in zip(imgs, sizes):
+        c.drawImage(_reader(im), x, top - row_h + (row_h - h) / 2, w, h)
+        x += w + gap
+    return top - row_h
+
+
+def _frame(c, W, H, m):
+    """Thin double frame (gold outer, light inner) used on solution pages."""
+    c.setStrokeColorRGB(*ACCENT)
+    c.setLineWidth(1.6)
+    c.roundRect(m, m, W - 2 * m, H - 2 * m, 10)
+    c.setStrokeColorRGB(0.85, 0.80, 0.72)
+    c.setLineWidth(0.6)
+    c.roundRect(m + 5, m + 5, W - 2 * m - 10, H - 2 * m - 10, 7)
+
+
+def build_pdf(out_path, name=None, student_id=None, images=(), logos=None, doctor=None,
+              year=None, frame=False, title="حل التاسك", logo=None):
+    """images: list of raw bytes in the order the user sent them. Everything else is optional.
+    logos: up to 3 images (bytes) shown centred on the cover; `logo` is the old single-logo arg."""
+    logos = list(logos or ([] if logo is None else [logo]))
     W, H = A4
     c = canvas.Canvas(out_path, pagesize=A4)
-    c.setTitle(f"{title} - {name} - {student_id}")
-    c.setAuthor(name)
+    c.setTitle(" - ".join(x for x in (title, name, student_id) if x))
+    if name:
+        c.setAuthor(name)
 
     # ---------- cover ----------
     c.setStrokeColorRGB(*ACCENT)
     c.setLineWidth(2)
     c.roundRect(28, 28, W - 56, H - 56, 14)
 
-    y = H - 90
-    if logo:
-        lg = _load_image(logo, 900)
-        box = 190
-        _draw_fit(c, lg, (W - box) / 2, y - box, box, box)
-        y -= box + 60
+    rows = [(lbl, v) for lbl, v in (("الاسم", name), ("الرقم الجامعي", student_id), ("الدكتور", doctor)) if v]
+    y = H - 85
+    if logos:
+        y = _logo_row(c, logos, y) - 70
     else:
-        y -= 120
+        y -= 150 if rows else 280
 
     _centered(c, title, y, "Bold", 34, INK)
     y -= 26
@@ -147,30 +179,35 @@ def build_pdf(out_path, name, student_id, images, logo=None, doctor=None, title=
     c.line(W / 2 - 70, y, W / 2 + 70, y)
     y -= 70
 
-    rows = [("الاسم", name), ("الرقم الجامعي", student_id)]
-    if doctor:
-        rows.append(("الدكتور", doctor))
     for label, value in rows:
         _centered(c, label, y, "Body", 15, MUTED)
         y -= 30
         _centered(c, value, y, "Bold", 22, INK)
         y -= 56
 
-    _centered(c, date.today().strftime("%Y-%m-%d"), 70, "Body", 12, MUTED)
+    if year:
+        _centered(c, year, 66, "Bold", 15, ACCENT)
     c.showPage()
 
     # ---------- solution pages ----------
     total = len(images)
-    margin, footer = 30, 34
+    who = " — ".join(x for x in (name, student_id) if x)
+    m = 30                       # page margin
+    pad = 14 if frame else 0     # space between frame and picture
+    footer = 34
     for i, data in enumerate(images, 1):
         img = _load_image(data)
-        _draw_fit(c, img, margin, margin + footer, W - 2 * margin, H - 2 * margin - footer)
-        c.setStrokeColorRGB(0.85, 0.82, 0.78)
-        c.setLineWidth(0.6)
-        c.line(margin, margin + footer - 10, W - margin, margin + footer - 10)
+        if frame:
+            _frame(c, W, H, m - 12)
+        _draw_fit(c, img, m + pad, m + footer, W - 2 * (m + pad), H - 2 * m - footer - pad)
+        if not frame:
+            c.setStrokeColorRGB(0.85, 0.82, 0.78)
+            c.setLineWidth(0.6)
+            c.line(m, m + footer - 10, W - m, m + footer - 10)
         c.setFillColorRGB(*MUTED)
-        draw_text(c, W - margin, margin + 6, f"{name} — {student_id}", "Body", 10, "right")
-        draw_text(c, margin, margin + 6, f"{i} / {total}", "Body", 10)
+        if who:
+            draw_text(c, W - m - pad, m + 6, who, "Body", 10, "right")
+        draw_text(c, m + pad, m + 6, f"{i} / {total}", "Body", 10)
         c.showPage()
 
     c.save()

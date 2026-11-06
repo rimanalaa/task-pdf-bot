@@ -1,6 +1,6 @@
 """Telegram task-PDF bot as a small Flask webhook app (for PythonAnywhere's free plan).
 
-Same flow as bot.py: logo (optional) -> name (required) -> ID (required) -> doctor (optional)
+Flow: up to 3 logos, name, ID, doctor, year, page frame (all optional)
 -> solution images in order -> PDF. State is kept in a JSON file, so it survives restarts.
 
 Setup on the server:
@@ -48,7 +48,12 @@ DONE = "✅ اعمل الـ PDF"
 UNDO = "↩️ احذف آخر صورة"
 REUSE_YES = "👍 نفس بياناتي"
 REUSE_NO = "✏️ بيانات جديدة"
+LOGOS_DONE = "✅ خلصت اللوجوهات"
+FRAME_YES = "🖼️ مع إطار"
+FRAME_NO = "⬜ بدون إطار"
+BUTTONS = (SKIP, DONE, UNDO, REUSE_YES, REUSE_NO, LOGOS_DONE, FRAME_YES, FRAME_NO)
 MAX_IMAGES = 60
+MAX_LOGOS = 3
 
 app = Flask(__name__)
 _lock = threading.Lock()
@@ -132,25 +137,53 @@ def image_file_id(msg):
 
 
 # ---------------- flow ----------------
+# LOGO -> NAME -> ID -> DOCTOR -> YEAR -> FRAME -> IMAGES ; everything except the images is optional
+def year_buttons():
+    now = time.gmtime()
+    acad = f"{now.tm_year}/{now.tm_year + 1}" if now.tm_mon >= 8 else f"{now.tm_year - 1}/{now.tm_year}"
+    return kb([acad, str(now.tm_year)], [SKIP])
+
+
 def ask_logo(chat, u):
-    u.update(state="LOGO", draft={}, images=[])
-    say(chat, "أهلاً 👋 رح نعمل ملف PDF لحل التاسك.\n\n1️⃣ ابعت اللوجو (اختياري) أو اضغط تخطي.", kb([SKIP]))
+    u.update(state="LOGO", draft={"logos": []}, images=[])
+    say(chat, "أهلاً 👋 رح نعمل ملف PDF لحل التاسك.\n\n"
+              f"1️⃣ ابعت اللوجو (لحد {MAX_LOGOS} لوجوهات، اختياري) أو اضغط تخطي.", kb([SKIP]))
+
+
+def ask_name(chat, u, prefix=""):
+    u["state"] = "NAME"
+    say(chat, prefix + "2️⃣ اكتب اسمك (اختياري):", kb([SKIP]))
+
+
+def ask_frame(chat, u):
+    u["state"] = "FRAME"
+    say(chat, "6️⃣ بدك إطار حول صفحات الحل؟", kb([FRAME_YES, FRAME_NO]))
 
 
 def ask_images(chat, u):
     u.update(state="IMAGES", images=[])
-    say(chat, "5️⃣ هلّق ابعت صور حل التاسك *بالترتيب* 📸\n"
+    say(chat, "7️⃣ هلّق ابعت صور حل التاسك *بالترتيب* 📸\n"
               "(بتقدر تبعتهم كألبوم أو وحدة وحدة، وكـ File لجودة أعلى)\n\n"
               f"لما تخلص اضغط «{DONE}».", kb([DONE], [UNDO]), md=True)
+
+
+def summary(p):
+    rows = [("الاسم", p.get("name")), ("الرقم", p.get("id")), ("الدكتور", p.get("doctor")),
+            ("السنة", p.get("year"))]
+    out = [f"{k}: {v}" for k, v in rows if v]
+    if p.get("logos"):
+        out.append(f"اللوجوهات: {len(p['logos'])} ✅")
+    out.append("الإطار: " + ("مع إطار" if p.get("frame") else "بدون"))
+    return "\n".join(out)
 
 
 def start(chat, u):
     p = u.get("profile")
     if p:
-        doc = f"\nالدكتور: {p['doctor']}" if p.get("doctor") else ""
-        logo = "\nاللوجو: موجود ✅" if p.get("logo") else ""
+        if p.get("logo") and not p.get("logos"):  # profile saved by the older version
+            p["logos"] = [[0, p["logo"]]]
         u["state"] = "REUSE"
-        say(chat, f"أهلاً من جديد 👋\nآخر بيانات استخدمتها:\nالاسم: {p['name']}\nالرقم: {p['id']}{doc}{logo}\n\nبدك نفسها؟",
+        say(chat, f"أهلاً من جديد 👋\nآخر بيانات استخدمتها:\n{summary(p)}\n\nبدك نفسها؟",
             kb([REUSE_YES, REUSE_NO]))
     else:
         ask_logo(chat, u)
@@ -165,11 +198,13 @@ def make_pdf(chat, u):
     say(chat, f"⏳ عم جهّز الـ PDF ({len(imgs)} صورة)...", NO_KB)
     try:
         datas = [download(fid) for _, fid in imgs]
-        logo = download(d["logo"]) if d.get("logo") else None
-        safe = re.sub(r'[\\/:*?"<>|\s]+', "_", f"{d['id']}_{d['name']}").strip("_")
+        logos = [download(fid) for _, fid in sorted(d.get("logos") or [])]
+        base = "_".join(x for x in (d.get("id"), d.get("name")) if x) or "حل_التاسك"
+        safe = re.sub(r'[\\/:*?"<>|\s]+', "_", base).strip("_")[:60]
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, f"{safe}.pdf")
-            build_pdf(path, d["name"], d["id"], datas, logo=logo, doctor=d.get("doctor"))
+            build_pdf(path, d.get("name"), d.get("id"), datas, logos=logos, doctor=d.get("doctor"),
+                      year=d.get("year"), frame=bool(d.get("frame")))
             with open(path, "rb") as fh:
                 tg("sendDocument", chat_id=chat, caption="جاهز ✅ بالتوفيق 🌟\nلتاسك جديد: /start",
                    _files={"document": (f"{safe}.pdf", fh, "application/pdf")})
@@ -179,11 +214,20 @@ def make_pdf(chat, u):
     u.update(state=None, images=[])
 
 
+def optional_text(text):
+    """(ok, value): SKIP -> (True, None); empty/command/other button -> (False, None)."""
+    if text == SKIP:
+        return True, None
+    if not text or text.startswith("/") or text in BUTTONS:
+        return False, None
+    return True, text
+
+
 def handle(msg, u):
     chat = msg["chat"]["id"]
     text = (msg.get("text") or "").strip()
     bare = text.replace("️", "")
-    for label in (SKIP, DONE, UNDO, REUSE_YES, REUSE_NO):  # some clients drop the emoji variation selector
+    for label in BUTTONS:  # some clients drop the emoji variation selector
         if bare == label.replace("️", ""):
             text = label
     fid = image_file_id(msg)
@@ -204,35 +248,56 @@ def handle(msg, u):
         return say(chat, "اختار من الأزرار تحت 👇")
 
     if st == "LOGO":
+        logos = u["draft"].setdefault("logos", [])
         if fid:
-            u["draft"]["logo"] = fid
-            prefix = "تمام، وصل اللوجو ✅\n\n"
-        elif text == SKIP:
-            u["draft"]["logo"] = None
-            prefix = ""
-        else:
-            return say(chat, "ابعت اللوجو كصورة، أو اضغط تخطي.")
-        u["state"] = "NAME"
-        return say(chat, prefix + "2️⃣ اكتب اسمك (إجباري):", NO_KB)
+            logos.append([msg["message_id"], fid])
+            if len(logos) >= MAX_LOGOS:
+                return ask_name(chat, u, f"تمام، وصلوا {MAX_LOGOS} لوجوهات ✅\n\n")
+            if not msg.get("media_group_id") or len(logos) == 1:
+                say(chat, f"✅ وصل اللوجو. ابعت كمان (لحد {MAX_LOGOS}) أو اضغط «{LOGOS_DONE}».",
+                    kb([LOGOS_DONE]))
+            return
+        if text in (SKIP, LOGOS_DONE):
+            return ask_name(chat, u)
+        return say(chat, "ابعت اللوجو كصورة، أو اضغط تخطي.")
 
     if st == "NAME":
-        if len(text) < 2 or text.startswith("/") or text in (SKIP, DONE):
-            return say(chat, "الاسم إجباري، اكتبه لو سمحت:")
-        u["draft"]["name"] = text[:80]
+        if fid:
+            return  # extra logos from an album after the 3rd: ignore quietly
+        ok, val = optional_text(text)
+        if not ok:
+            return say(chat, "اكتب اسمك أو اضغط تخطي.")
+        u["draft"]["name"] = val[:80] if val else None
         u["state"] = "ID"
-        return say(chat, "3️⃣ اكتب الرقم الجامعي / الـ ID (إجباري):")
+        return say(chat, "3️⃣ اكتب الرقم الجامعي / الـ ID (اختياري):", kb([SKIP]))
 
     if st == "ID":
-        if not text or text.startswith("/") or text in (SKIP, DONE):
-            return say(chat, "الـ ID إجباري، اكتبه لو سمحت:")
-        u["draft"]["id"] = text[:40]
+        ok, val = optional_text(text)
+        if not ok:
+            return say(chat, "اكتب الـ ID أو اضغط تخطي.")
+        u["draft"]["id"] = val[:40] if val else None
         u["state"] = "DOCTOR"
-        return say(chat, "4️⃣ اسم الدكتور (اختياري) — اكتبه أو اضغط تخطي:", kb([SKIP]))
+        return say(chat, "4️⃣ اسم الدكتور (اختياري):", kb([SKIP]))
 
     if st == "DOCTOR":
-        if not text:
+        ok, val = optional_text(text)
+        if not ok:
             return say(chat, "اكتب اسم الدكتور أو اضغط تخطي.")
-        u["draft"]["doctor"] = None if text == SKIP else text[:80]
+        u["draft"]["doctor"] = val[:80] if val else None
+        u["state"] = "YEAR"
+        return say(chat, "5️⃣ السنة اللي بتنكتب آخر الغلاف (اختياري) — اختار أو اكتبها:", year_buttons())
+
+    if st == "YEAR":
+        ok, val = optional_text(text)
+        if not ok:
+            return say(chat, "اكتب السنة أو اضغط تخطي.")
+        u["draft"]["year"] = val[:30] if val else None
+        return ask_frame(chat, u)
+
+    if st == "FRAME":
+        if text not in (FRAME_YES, FRAME_NO):
+            return say(chat, "اختار من الأزرار تحت 👇")
+        u["draft"]["frame"] = text == FRAME_YES
         u["profile"] = dict(u["draft"])  # remember for next time
         return ask_images(chat, u)
 
