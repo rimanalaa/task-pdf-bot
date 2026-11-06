@@ -223,9 +223,17 @@ def year_buttons():
 
 
 def ask_logo(chat, u):
-    u.update(state="LOGO", draft={"logos": []}, images=[])
+    u.update(state="LOGO", draft={"logos": []}, images=[], reuse=False)
     say(chat, "أهلاً 👋 رح نعمل ملف PDF لحل التاسك.\n\n"
               f"1️⃣ ابعت اللوجو (لحد {MAX_LOGOS} لوجوهات، اختياري) أو اضغط تخطي.", kb([SKIP]))
+
+
+def ask_title(chat, u, prefix=""):
+    u["state"] = "TITLE"
+    prev = (u.get("draft") or {}).get("title")
+    rows = [[prev], [SKIP]] if prev else [[SKIP]]
+    say(chat, prefix + "🏷️ بدك عنوان على الغلاف؟ (مثلاً: Assignment 1 أو اسم المادة)\n"
+                       "اكتبه، أو اضغط تخطي إذا ما بدك عنوان.", kb(*rows))
 
 
 def ask_name(chat, u, prefix=""):
@@ -246,7 +254,7 @@ def ask_images(chat, u):
 
 
 def summary(p):
-    rows = [("الاسم", p.get("name")), ("الرقم", p.get("id")), ("الدكتور", p.get("doctor")),
+    rows = [("العنوان", p.get("title")), ("الاسم", p.get("name")), ("الرقم", p.get("id")), ("الدكتور", p.get("doctor")),
             ("السنة", p.get("year"))]
     out = [f"{k}: {v}" for k, v in rows if v]
     if p.get("logos"):
@@ -268,12 +276,12 @@ def start(chat, u):
 
 
 def default_name(d):
-    return "_".join(x for x in (d.get("id"), d.get("name")) if x) or "حل_التاسك"
+    return "_".join(x for x in (d.get("title"), d.get("id"), d.get("name")) if x) or "task"
 
 
 def safe_name(text):
     text = re.sub(r"\.pdf$", "", (text or "").strip(), flags=re.I)
-    return re.sub(r'[\\/:*?"<>|\s]+', "_", text).strip("_.")[:60] or "حل_التاسك"
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", text).strip("_.")[:60] or "task"
 
 
 def ask_filename(chat, u):
@@ -302,7 +310,7 @@ def make_pdf(chat, u, fname):
     path = os.path.join(PDF_DIR, f"{key}.pdf")
     try:
         build_pdf(path, d.get("name"), d.get("id"), datas, logos=logos, doctor=d.get("doctor"),
-                  year=d.get("year"), frame=bool(d.get("frame")))
+                  year=d.get("year"), frame=bool(d.get("frame")), title=d.get("title"))
     except Exception:
         log.exception("PDF build failed")
         u.update(state=None, images=[])
@@ -353,7 +361,8 @@ def handle(msg, u):
     if st == "REUSE":
         if text == REUSE_YES:
             u["draft"] = dict(u["profile"])
-            return ask_images(chat, u)
+            u["reuse"] = True
+            return ask_title(chat, u)
         if text == REUSE_NO:
             return ask_logo(chat, u)
         return say(chat, "اختار من الأزرار تحت 👇")
@@ -365,17 +374,28 @@ def handle(msg, u):
             prefetch(fid)
             n = len(logos)
             if n >= MAX_LOGOS:
-                return ask_name(chat, u, f"تمام، وصلوا {MAX_LOGOS} لوجوهات ✅\n\n")
+                return ask_title(chat, u, f"تمام، وصلوا {MAX_LOGOS} لوجوهات ✅\n\n")
             if msg.get("media_group_id") and n > 1:
                 return  # rest of an album: one question is enough
             return say(chat, f"✅ وصل اللوجو {n}.\nفي لوجو كمان؟", kb([LOGO_MORE, LOGOS_DONE]))
         if text == LOGO_MORE:
             return say(chat, f"تمام، ابعت اللوجو {len(logos) + 1} 👇", kb([LOGOS_DONE]))
         if text in (SKIP, LOGOS_DONE):
-            return ask_name(chat, u)
+            return ask_title(chat, u)
         if logos:
             return say(chat, f"ابعت اللوجو كصورة، أو اضغط «{LOGOS_DONE}».", kb([LOGO_MORE, LOGOS_DONE]))
         return say(chat, "ابعت اللوجو كصورة، أو اضغط تخطي.", kb([SKIP]))
+
+    if st == "TITLE":
+        if fid:
+            return  # extra logos from an album after the 3rd: ignore quietly
+        ok, val = optional_text(text)
+        if not ok:
+            return say(chat, "اكتب العنوان أو اضغط تخطي.", kb([SKIP]))
+        u["draft"]["title"] = val[:60] if val else None
+        if u.pop("reuse", False):
+            return ask_images(chat, u)
+        return ask_name(chat, u)
 
     if st == "NAME":
         if fid:

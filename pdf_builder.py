@@ -150,20 +150,21 @@ def _frame(c, W, H, m):
 
 
 def build_pdf(out_path, name=None, student_id=None, images=(), logos=None, doctor=None,
-              year=None, frame=False, title="حل التاسك", logo=None):
+              year=None, frame=False, title=None, logo=None):
     """images: list of raw bytes in the order the user sent them. Everything else is optional.
     logos: up to 3 images (bytes) shown centred on the cover; `logo` is the old single-logo arg."""
     logos = list(logos or ([] if logo is None else [logo]))
     W, H = A4
     c = canvas.Canvas(out_path, pagesize=A4)
-    c.setTitle(" - ".join(x for x in (title, name, student_id) if x))
+    c.setTitle(" - ".join(x for x in (title, name, student_id) if x) or "PDF")
     if name:
         c.setAuthor(name)
 
     # ---------- cover ----------
-    c.setStrokeColorRGB(*ACCENT)
-    c.setLineWidth(2)
-    c.roundRect(28, 28, W - 56, H - 56, 14)
+    if frame:  # the frame choice covers the cover page too
+        c.setStrokeColorRGB(*ACCENT)
+        c.setLineWidth(2)
+        c.roundRect(28, 28, W - 56, H - 56, 14)
 
     rows = [(lbl, v) for lbl, v in (("الاسم", name), ("الرقم الجامعي", student_id), ("الدكتور", doctor)) if v]
     y = H - 85
@@ -172,12 +173,16 @@ def build_pdf(out_path, name=None, student_id=None, images=(), logos=None, docto
     else:
         y -= 150 if rows else 280
 
-    _centered(c, title, y, "Bold", 34, INK)
-    y -= 26
-    c.setStrokeColorRGB(*ACCENT)
-    c.setLineWidth(1.5)
-    c.line(W / 2 - 70, y, W / 2 + 70, y)
-    y -= 70
+    if title:
+        size = 34 if len(title) <= 22 else 26 if len(title) <= 34 else 20
+        _centered(c, title, y, "Bold", size, INK)
+        y -= 26
+        c.setStrokeColorRGB(*ACCENT)
+        c.setLineWidth(1.5)
+        c.line(W / 2 - 70, y, W / 2 + 70, y)
+        y -= 70
+    elif logos:
+        y -= 20
 
     for label, value in rows:
         _centered(c, label, y, "Body", 15, MUTED)
