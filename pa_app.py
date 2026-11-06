@@ -15,6 +15,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 
 import requests
 from flask import Flask, abort, request
@@ -71,12 +72,24 @@ def _save(db):
 
 # ---------------- telegram helpers ----------------
 def tg(method, **params):
+    """Call the Bot API. PythonAnywhere's free proxy sometimes answers 503, so retry."""
     files = params.pop("_files", None)
-    r = requests.post(f"{API}/{method}", data=params if files else None,
-                      json=None if files else params, files=files, timeout=60)
-    if not r.ok:
-        log.warning("%s failed: %s", method, r.text[:300])
-    return r.json() if r.content else {}
+    for attempt in range(5):
+        try:
+            if files:
+                for f in files.values():
+                    f[1].seek(0)
+            r = requests.post(f"{API}/{method}", data=params if files else None,
+                              json=None if files else params, files=files, timeout=60)
+            if r.status_code >= 500 or r.status_code == 429:
+                raise requests.ConnectionError(f"HTTP {r.status_code}")
+            if not r.ok:
+                log.warning("%s failed: %s", method, r.text[:300])
+            return r.json() if r.content else {}
+        except requests.RequestException as e:
+            log.warning("%s attempt %d failed: %s", method, attempt + 1, type(e).__name__)
+            time.sleep(0.6 * (attempt + 1))
+    raise RuntimeError(f"Telegram {method} failed after retries")
 
 
 def kb(*rows):
@@ -98,9 +111,15 @@ def say(chat, text, markup=None, md=False):
 def download(file_id) -> bytes:
     info = tg("getFile", file_id=file_id)
     path = info["result"]["file_path"]
-    r = requests.get(f"{FILE_API}/{path}", timeout=60)
-    r.raise_for_status()
-    return r.content
+    for attempt in range(5):
+        try:
+            r = requests.get(f"{FILE_API}/{path}", timeout=60)
+            r.raise_for_status()
+            return r.content
+        except requests.RequestException:
+            if attempt == 4:
+                raise
+            time.sleep(0.6 * (attempt + 1))
 
 
 def image_file_id(msg):
@@ -163,6 +182,10 @@ def make_pdf(chat, u):
 def handle(msg, u):
     chat = msg["chat"]["id"]
     text = (msg.get("text") or "").strip()
+    bare = text.replace("️", "")
+    for label in (SKIP, DONE, UNDO, REUSE_YES, REUSE_NO):  # some clients drop the emoji variation selector
+        if bare == label.replace("️", ""):
+            text = label
     fid = image_file_id(msg)
     st = u.get("state")
 
