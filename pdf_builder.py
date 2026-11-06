@@ -20,11 +20,17 @@ except ImportError:  # older python-bidi
 HERE = os.path.dirname(os.path.abspath(__file__))
 NOTO = "/usr/share/fonts/truetype/noto/"
 # (arabic regular, arabic bold, latin regular, latin bold) — first set that exists wins
+FONTS = os.path.join(HERE, "fonts") + os.sep
+DEJAVU = "/usr/share/fonts/truetype/dejavu/"
 FONT_SETS = [
+    (FONTS + "NotoSansArabic-Regular.ttf", FONTS + "NotoSansArabic-Bold.ttf",
+     FONTS + "NotoSans-Regular.ttf", FONTS + "NotoSans-Bold.ttf"),  # bundled (PythonAnywhere)
     (NOTO + "NotoSansArabic-Regular.ttf", NOTO + "NotoSansArabic-Bold.ttf",
      NOTO + "NotoSans-Regular.ttf", NOTO + "NotoSans-Bold.ttf"),  # server (Docker + fonts-noto-core)
     (r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\arialbd.ttf",
      r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\segoeuib.ttf"),  # Windows laptop
+    (DEJAVU + "DejaVuSans.ttf", DEJAVU + "DejaVuSans-Bold.ttf",
+     DEJAVU + "DejaVuSans.ttf", DEJAVU + "DejaVuSans-Bold.ttf"),  # any Linux fallback
 ]
 ARABIC = re.compile("[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]")
 

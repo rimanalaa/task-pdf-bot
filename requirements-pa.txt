@@ -1,0 +1,6 @@
+reportlab
+arabic-reshaper
+python-bidi
+flask
+requests
+pillow
