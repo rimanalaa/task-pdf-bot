@@ -26,17 +26,25 @@ COMMANDS = [
 
 
 def call(method, **kw):
-    out = tg(method, **kw)  # retries PythonAnywhere proxy errors
+    try:
+        out = tg(method, **kw)  # retries PythonAnywhere proxy errors
+    except Exception as e:
+        out = {"ok": False, "description": str(e)}
     print(method, "->", out.get("ok"), out.get("description", ""))
-    return out
+    return {method: [out.get("ok"), out.get("description", "")]}
 
 
-assert TOKEN, "BOT_TOKEN missing"
-call("setMyShortDescription", short_description=SHORT)
-call("setMyDescription", description=DESCRIPTION)
-call("setMyCommands", commands=COMMANDS)
+def apply():
+    assert TOKEN, "BOT_TOKEN missing"
+    res = [call("setMyShortDescription", short_description=SHORT),
+           call("setMyDescription", description=DESCRIPTION),
+           call("setMyCommands", commands=COMMANDS)]
+    with open(os.path.join(HERE, "assets", "avatar.png"), "rb") as f:
+        res.append(call("setMyProfilePhoto",
+                        photo=json.dumps({"type": "static", "photo": "attach://pic"}),
+                        _files={"pic": ("avatar.png", f, "image/png")}))
+    return res
 
-with open(os.path.join(HERE, "assets", "avatar.png"), "rb") as f:
-    call("setMyProfilePhoto",
-         photo=json.dumps({"type": "static", "photo": "attach://pic"}),
-         _files={"pic": ("avatar.png", f, "image/png")})
+
+if __name__ == "__main__":
+    apply()

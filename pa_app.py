@@ -300,3 +300,12 @@ def setup(code):
            drop_pending_updates=True)
     me = tg("getMe")
     return {"setWebhook": r, "bot": me.get("result", {}).get("username")}
+
+
+@app.route("/setup/<code>/profile")
+def setup_profile(code):
+    """Applies set_profile.py from inside the web app (its proxy is more reliable than consoles)."""
+    if not TOKEN or code != SECRET[:12]:
+        abort(404)
+    import set_profile
+    return {"results": set_profile.apply()}
