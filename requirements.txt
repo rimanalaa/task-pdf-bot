@@ -1,0 +1,5 @@
+python-telegram-bot[webhooks]==21.*
+reportlab
+pillow
+arabic-reshaper
+python-bidi
