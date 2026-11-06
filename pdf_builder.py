@@ -140,11 +140,11 @@ def _logo_row(c, logos, top, max_h=150, gap=26):
 
 
 def _frame(c, W, H, m):
-    """Thin double frame (gold outer, light inner) used on solution pages."""
-    c.setStrokeColorRGB(*ACCENT)
+    """Thin double frame (black outer, light grey inner) used on every page."""
+    c.setStrokeColorRGB(0, 0, 0)
     c.setLineWidth(1.6)
     c.roundRect(m, m, W - 2 * m, H - 2 * m, 10)
-    c.setStrokeColorRGB(0.85, 0.80, 0.72)
+    c.setStrokeColorRGB(0.72, 0.72, 0.72)
     c.setLineWidth(0.6)
     c.roundRect(m + 5, m + 5, W - 2 * m - 10, H - 2 * m - 10, 7)
 
@@ -162,11 +162,9 @@ def build_pdf(out_path, name=None, student_id=None, images=(), logos=None, docto
 
     # ---------- cover ----------
     if frame:  # the frame choice covers the cover page too
-        c.setStrokeColorRGB(*ACCENT)
-        c.setLineWidth(2)
-        c.roundRect(28, 28, W - 56, H - 56, 14)
+        _frame(c, W, H, 18)
 
-    rows = [(lbl, v) for lbl, v in (("الاسم", name), ("الرقم الجامعي", student_id), ("الدكتور", doctor)) if v]
+    rows = [(lbl, v) for lbl, v in (("By:", name), ("NO:", student_id), ("Submitted to:", doctor)) if v]
     y = H - 85
     if logos:
         y = _logo_row(c, logos, y) - 70
@@ -184,11 +182,19 @@ def build_pdf(out_path, name=None, student_id=None, images=(), logos=None, docto
     elif logos:
         y -= 20
 
-    for label, value in rows:
-        _centered(c, label, y, "Body", 15, MUTED)
-        y -= 30
-        _centered(c, value, y, "Bold", 22, INK)
-        y -= 56
+    # "By: …" / "NO: …" / "Submitted to: …" as one block, labels aligned, centred on the page
+    if rows:
+        ls, vs, gap = 17, 20, 14
+        lw = max(_width(ar(l), "Bold", ls) for l, _ in rows)
+        vw = max(_width(ar(v), "Bold", vs) for _, v in rows)
+        x0 = max(70, (W - (lw + gap + vw)) / 2)
+        y -= 10
+        for label, value in rows:
+            c.setFillColorRGB(*MUTED)
+            draw_text(c, x0, y, label, "Bold", ls)
+            c.setFillColorRGB(*INK)
+            draw_text(c, x0 + lw + gap, y, value, "Bold", vs)
+            y -= 48
 
     if year:
         _centered(c, year, 66, "Bold", 15, ACCENT)
