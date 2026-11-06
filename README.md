@@ -11,14 +11,9 @@
 - بيتذكر بيانات كل مستخدم للمرة الجاية («نفس بياناتي»).
 - «↩️ احذف آخر صورة» لو انبعتت صورة غلط. `/cancel` للإلغاء.
 
-## تشغيله 24 ساعة ببلاش (Render)
-1. اعملي حساب على **github.com** وrepo جديد **Private** اسمه `task-pdf-bot` (فاضي)، وارفعي عليه هالمجلد (أو خلي Claude يرفعه).
-   - ملف `.env` (فيه التوكن) **ما بينرفع** — محمي بـ `.gitignore`.
-2. اعملي حساب على **render.com** (Sign in with GitHub، ما بدو بطاقة).
-3. **New → Blueprint** ← اختاري الـ repo ← بيقرأ `render.yaml` لحاله ← بيطلب `BOT_TOKEN` ← حطي التوكن ← Apply.
-4. استني البناء (~3-5 دقايق). لما يصير **Live** البوت شغال، واللابتوب مش لازم يكون شغال.
-
-ملاحظات الخطة المجانية:
-- إذا ما حدا استخدم البوت 15 دقيقة السيرفر "بينام"؛ أول رسالة بعدها بتصحيه وبيرد بعد ~دقيقة. بعدها سريع عادي.
-- لما ينام/يعيد تشغيل بينسى «نفس بياناتي» وأي تاسك نص مخلّص (المستخدم بيعمل /start من جديد).
-- لا تشغّلي `run.bat` على اللابتوب وهو شغال على Render بنفس الوقت.
+## شغال 24 ساعة على PythonAnywhere (مجاني)
+- البوت: t.me/riman_task_pdf_bot — السيرفر: https://rimanlogic.pythonanywhere.com (حساب rimanlogic)
+- الكود على السيرفر: `~/task-pdf-bot` (نسخة `pa_app.py`)، التوكن بـ `~/task-pdf-bot/.env`.
+- **كل شهر**: pythonanywhere.com ← Web ← «Run until 1 month from today» (وإلا البوت بيوقف).
+- تحديث الكود: Bash console ← `cd ~/task-pdf-bot && git pull` ← Web ← Reload.
+- الأخطاء: `/var/log/rimanlogic.pythonanywhere.com.error.log`.
