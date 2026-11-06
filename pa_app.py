@@ -49,9 +49,10 @@ UNDO = "↩️ احذف آخر صورة"
 REUSE_YES = "👍 نفس بياناتي"
 REUSE_NO = "✏️ بيانات جديدة"
 LOGOS_DONE = "✅ خلصت اللوجوهات"
+LOGO_MORE = "➕ في لوجو كمان"
 FRAME_YES = "🖼️ مع إطار"
 FRAME_NO = "⬜ بدون إطار"
-BUTTONS = (SKIP, DONE, UNDO, REUSE_YES, REUSE_NO, LOGOS_DONE, FRAME_YES, FRAME_NO)
+BUTTONS = (SKIP, DONE, UNDO, REUSE_YES, REUSE_NO, LOGOS_DONE, LOGO_MORE, FRAME_YES, FRAME_NO)
 MAX_IMAGES = 60
 MAX_LOGOS = 3
 
@@ -79,7 +80,7 @@ def _save(db):
 def tg(method, **params):
     """Call the Bot API. PythonAnywhere's free proxy sometimes answers 503, so retry."""
     files = params.pop("_files", None)
-    for attempt in range(5):
+    for attempt in range(8):
         try:
             if files:
                 for f in files.values():
@@ -93,7 +94,7 @@ def tg(method, **params):
             return r.json() if r.content else {}
         except requests.RequestException as e:
             log.warning("%s attempt %d failed: %s", method, attempt + 1, type(e).__name__)
-            time.sleep(0.6 * (attempt + 1))
+            time.sleep(min(0.5 * (attempt + 1), 3))
     raise RuntimeError(f"Telegram {method} failed after retries")
 
 
@@ -104,13 +105,41 @@ def kb(*rows):
 NO_KB = {"remove_keyboard": True}
 
 
-def say(chat, text, markup=None, md=False):
+_ctx = threading.local()
+
+
+def say(chat, text, markup=None, md=False, now=False):
+    """Queue a message. Inside a webhook the last queued message is returned in the HTTP
+    response itself (instant, bypasses PythonAnywhere's flaky outbound proxy)."""
     p = {"chat_id": chat, "text": text}
     if markup is not None:
         p["reply_markup"] = markup
     if md:
         p["parse_mode"] = "Markdown"
-    return tg("sendMessage", **p)
+    q = getattr(_ctx, "queue", None)
+    if q is None or now:
+        flush()
+        try:
+            return tg("sendMessage", **p)
+        except Exception:
+            log.exception("sendMessage lost")
+            return {}
+    q.append(p)
+    return {}
+
+
+def flush(keep_last=False):
+    """Send queued messages over the API (all, or all but the last)."""
+    q = getattr(_ctx, "queue", None)
+    if not q:
+        return
+    send = q[:-1] if keep_last else q[:]
+    del q[:len(send)]
+    for p in send:
+        try:
+            tg("sendMessage", **p)
+        except Exception:
+            log.exception("sendMessage lost")
 
 
 def download(file_id) -> bytes:
@@ -195,7 +224,7 @@ def make_pdf(chat, u):
         say(chat, "ابعت صورة وحدة على الأقل 📸")
         return
     d = u["draft"]
-    say(chat, f"⏳ عم جهّز الـ PDF ({len(imgs)} صورة)...", NO_KB)
+    say(chat, f"⏳ عم جهّز الـ PDF ({len(imgs)} صورة)...", NO_KB, now=True)
     try:
         datas = [download(fid) for _, fid in imgs]
         logos = [download(fid) for _, fid in sorted(d.get("logos") or [])]
@@ -251,15 +280,19 @@ def handle(msg, u):
         logos = u["draft"].setdefault("logos", [])
         if fid:
             logos.append([msg["message_id"], fid])
-            if len(logos) >= MAX_LOGOS:
+            n = len(logos)
+            if n >= MAX_LOGOS:
                 return ask_name(chat, u, f"تمام، وصلوا {MAX_LOGOS} لوجوهات ✅\n\n")
-            if not msg.get("media_group_id") or len(logos) == 1:
-                say(chat, f"✅ وصل اللوجو. ابعت كمان (لحد {MAX_LOGOS}) أو اضغط «{LOGOS_DONE}».",
-                    kb([LOGOS_DONE]))
-            return
+            if msg.get("media_group_id") and n > 1:
+                return  # rest of an album: one question is enough
+            return say(chat, f"✅ وصل اللوجو {n}.\nفي لوجو كمان؟", kb([LOGO_MORE, LOGOS_DONE]))
+        if text == LOGO_MORE:
+            return say(chat, f"تمام، ابعت اللوجو {len(logos) + 1} 👇", kb([LOGOS_DONE]))
         if text in (SKIP, LOGOS_DONE):
             return ask_name(chat, u)
-        return say(chat, "ابعت اللوجو كصورة، أو اضغط تخطي.")
+        if logos:
+            return say(chat, f"ابعت اللوجو كصورة، أو اضغط «{LOGOS_DONE}».", kb([LOGO_MORE, LOGOS_DONE]))
+        return say(chat, "ابعت اللوجو كصورة، أو اضغط تخطي.", kb([SKIP]))
 
     if st == "NAME":
         if fid:
@@ -346,6 +379,7 @@ def hook():
         _save(db)
         key = str(msg["chat"]["id"])
         u = db["users"].setdefault(key, {})
+        _ctx.queue = []
         try:
             handle(msg, u)
         except Exception:
@@ -353,6 +387,10 @@ def hook():
         db = _load()
         db["users"][key] = u
         _save(db)
+        flush(keep_last=True)  # normally nothing: handlers send one message
+        q, _ctx.queue = _ctx.queue, None
+    if q:  # reply inside the webhook response: no outbound request, arrives instantly
+        return {"method": "sendMessage", **q[-1]}
     return "ok"
 
 
