@@ -3,9 +3,7 @@ Run on the server: python3.12 set_profile.py"""
 import json
 import os
 
-import requests
-
-from pa_app import API, HERE, TOKEN
+from pa_app import HERE, TOKEN, tg
 
 SHORT = "حوّل صور حل التاسك لملف PDF مرتّب، مع غلاف باسمك ورقمك الجامعي، خلال ثواني 📄"
 
@@ -28,10 +26,7 @@ COMMANDS = [
 
 
 def call(method, **kw):
-    files = kw.pop("_files", None)
-    r = requests.post(f"{API}/{method}", data=kw if files else None, json=None if files else kw,
-                      files=files, timeout=60)
-    out = r.json()
+    out = tg(method, **kw)  # retries PythonAnywhere proxy errors
     print(method, "->", out.get("ok"), out.get("description", ""))
     return out
 
