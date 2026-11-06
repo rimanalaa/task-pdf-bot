@@ -6,3 +6,5 @@ sample.pdf
 state.json
 state.json.tmp
 fonts/
+cache/
+pdfs/

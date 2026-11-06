@@ -17,8 +17,10 @@ import tempfile
 import threading
 import time
 
+from urllib.parse import quote
+
 import requests
-from flask import Flask, abort, request
+from flask import Flask, abort, request, send_file
 
 from pdf_builder import build_pdf
 
@@ -50,9 +52,10 @@ REUSE_YES = "👍 نفس بياناتي"
 REUSE_NO = "✏️ بيانات جديدة"
 LOGOS_DONE = "✅ خلصت اللوجوهات"
 LOGO_MORE = "➕ في لوجو كمان"
+RETRY = "🔁 جرّب مرة ثانية"
 FRAME_YES = "🖼️ مع إطار"
 FRAME_NO = "⬜ بدون إطار"
-BUTTONS = (SKIP, DONE, UNDO, REUSE_YES, REUSE_NO, LOGOS_DONE, LOGO_MORE, FRAME_YES, FRAME_NO)
+BUTTONS = (SKIP, DONE, UNDO, REUSE_YES, REUSE_NO, LOGOS_DONE, LOGO_MORE, RETRY, FRAME_YES, FRAME_NO)
 MAX_IMAGES = 60
 MAX_LOGOS = 3
 
@@ -77,15 +80,18 @@ def _save(db):
 
 
 # ---------------- telegram helpers ----------------
-def tg(method, **params):
+_http = requests.Session()  # reuses the proxy tunnel between calls -> far fewer 503s
+
+
+def tg(method, _tries=8, **params):
     """Call the Bot API. PythonAnywhere's free proxy sometimes answers 503, so retry."""
     files = params.pop("_files", None)
-    for attempt in range(8):
+    for attempt in range(_tries):
         try:
             if files:
                 for f in files.values():
                     f[1].seek(0)
-            r = requests.post(f"{API}/{method}", data=params if files else None,
+            r = _http.post(f"{API}/{method}", data=params if files else None,
                               json=None if files else params, files=files, timeout=60)
             if r.status_code >= 500 or r.status_code == 429:
                 raise requests.ConnectionError(f"HTTP {r.status_code}")
@@ -142,18 +148,61 @@ def flush(keep_last=False):
             log.exception("sendMessage lost")
 
 
-def download(file_id) -> bytes:
-    info = tg("getFile", file_id=file_id)
+CACHE = os.path.join(HERE, "cache")
+PDF_DIR = os.path.join(HERE, "pdfs")
+
+
+def _cache_path(file_id):
+    return os.path.join(CACHE, hashlib.sha1(file_id.encode()).hexdigest()[:24] + ".img")
+
+
+def download(file_id, tries=10) -> bytes:
+    """Bytes of a Telegram file. Cached on disk: images are fetched as they arrive, so the
+    PDF step usually needs no network at all (the free proxy fails a lot)."""
+    cp = _cache_path(file_id)
+    if os.path.exists(cp):
+        with open(cp, "rb") as f:
+            return f.read()
+    info = tg("getFile", _tries=tries, file_id=file_id)
     path = info["result"]["file_path"]
-    for attempt in range(5):
+    for attempt in range(tries):
         try:
-            r = requests.get(f"{FILE_API}/{path}", timeout=60)
+            r = _http.get(f"{FILE_API}/{path}", timeout=40)
             r.raise_for_status()
+            os.makedirs(CACHE, exist_ok=True)
+            with open(cp + ".tmp", "wb") as f:
+                f.write(r.content)
+            os.replace(cp + ".tmp", cp)
             return r.content
-        except requests.RequestException:
-            if attempt == 4:
-                raise
-            time.sleep(0.6 * (attempt + 1))
+        except requests.RequestException as e:  # never log the URL: it contains the token
+            log.warning("download attempt %d failed: %s", attempt + 1, type(e).__name__)
+            time.sleep(min(0.5 * (attempt + 1), 3))
+    raise RuntimeError("download failed after retries")
+
+
+def prefetch(file_id):
+    """Best-effort quick download when an image arrives (keeps replies fast)."""
+    try:
+        download(file_id, tries=2)
+    except Exception:
+        pass
+
+
+def cleanup(file_ids):
+    for fid in file_ids:
+        try:
+            os.remove(_cache_path(fid))
+        except OSError:
+            pass
+    now = time.time()
+    for d in (CACHE, PDF_DIR):
+        for fn in os.listdir(d) if os.path.isdir(d) else ():
+            p = os.path.join(d, fn)
+            try:
+                if now - os.path.getmtime(p) > 6 * 3600:
+                    os.remove(p)
+            except OSError:
+                pass
 
 
 def image_file_id(msg):
@@ -218,28 +267,61 @@ def start(chat, u):
         ask_logo(chat, u)
 
 
-def make_pdf(chat, u):
+def default_name(d):
+    return "_".join(x for x in (d.get("id"), d.get("name")) if x) or "حل_التاسك"
+
+
+def safe_name(text):
+    text = re.sub(r"\.pdf$", "", (text or "").strip(), flags=re.I)
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", text).strip("_.")[:60] or "حل_التاسك"
+
+
+def ask_filename(chat, u):
+    if not u.get("images"):
+        return say(chat, "ابعت صورة وحدة على الأقل 📸")
+    u["state"] = "FILENAME"
+    say(chat, "📝 شو بدك يكون اسم ملف الـ PDF؟\nاكتبه، أو اختار الاسم المقترح 👇",
+        kb([safe_name(default_name(u["draft"]))]))
+
+
+def make_pdf(chat, u, fname):
     imgs = sorted(u.get("images", []))
-    if not imgs:
-        say(chat, "ابعت صورة وحدة على الأقل 📸")
-        return
     d = u["draft"]
+    logo_ids = [fid for _, fid in sorted(d.get("logos") or [])]
     say(chat, f"⏳ عم جهّز الـ PDF ({len(imgs)} صورة)...", NO_KB, now=True)
     try:
         datas = [download(fid) for _, fid in imgs]
-        logos = [download(fid) for _, fid in sorted(d.get("logos") or [])]
-        base = "_".join(x for x in (d.get("id"), d.get("name")) if x) or "حل_التاسك"
-        safe = re.sub(r'[\\/:*?"<>|\s]+', "_", base).strip("_")[:60]
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, f"{safe}.pdf")
-            build_pdf(path, d.get("name"), d.get("id"), datas, logos=logos, doctor=d.get("doctor"),
-                      year=d.get("year"), frame=bool(d.get("frame")))
-            with open(path, "rb") as fh:
-                tg("sendDocument", chat_id=chat, caption="جاهز ✅ بالتوفيق 🌟\nلتاسك جديد: /start",
-                   _files={"document": (f"{safe}.pdf", fh, "application/pdf")})
+        logos = [download(fid) for fid in logo_ids]
+    except Exception as e:
+        log.error("PDF download failed: %s", type(e).__name__)
+        u["fname"] = fname
+        return say(chat, "😕 السيرفر ما قدر يحمّل الصور من تيليجرام هلّق (ضغط على الشبكة).\n"
+                         "صورك محفوظة، اضغط «🔁 جرّب مرة ثانية» بعد شوي.", kb([RETRY], [UNDO]))
+    os.makedirs(PDF_DIR, exist_ok=True)
+    key = hashlib.sha1(f"{chat}{time.time()}".encode()).hexdigest()[:16]
+    path = os.path.join(PDF_DIR, f"{key}.pdf")
+    try:
+        build_pdf(path, d.get("name"), d.get("id"), datas, logos=logos, doctor=d.get("doctor"),
+                  year=d.get("year"), frame=bool(d.get("frame")))
     except Exception:
-        log.exception("PDF failed")
-        say(chat, "صار خطأ وأنا بعمل الملف 😕 جرّب مرة ثانية: /start")
+        log.exception("PDF build failed")
+        u.update(state=None, images=[])
+        return say(chat, "صار خطأ وأنا بعمل الملف 😕 جرّب مرة ثانية: /start", NO_KB)
+    caption = "جاهز ✅ بالتوفيق 🌟\nلتاسك جديد: /start"
+    try:
+        with open(path, "rb") as fh:
+            r = tg("sendDocument", _tries=4, chat_id=chat, caption=caption,
+                   _files={"document": (f"{fname}.pdf", fh, "application/pdf")})
+        if not r.get("ok"):
+            raise RuntimeError(r.get("description"))
+        os.remove(path)
+    except Exception as e:
+        # proxy down: let Telegram fetch the PDF from us, inside the webhook reply
+        log.warning("upload failed (%s), sending by URL", type(e).__name__)
+        url = request.host_url.rstrip("/").replace("http://", "https://")
+        _ctx.reply = {"method": "sendDocument", "chat_id": chat, "caption": caption,
+                      "document": f"{url}/pdf/{key}/{quote(fname)}.pdf"}
+    cleanup(fid for _, fid in imgs)
     u.update(state=None, images=[])
 
 
@@ -280,6 +362,7 @@ def handle(msg, u):
         logos = u["draft"].setdefault("logos", [])
         if fid:
             logos.append([msg["message_id"], fid])
+            prefetch(fid)
             n = len(logos)
             if n >= MAX_LOGOS:
                 return ask_name(chat, u, f"تمام، وصلوا {MAX_LOGOS} لوجوهات ✅\n\n")
@@ -340,18 +423,35 @@ def handle(msg, u):
             if len(imgs) >= MAX_IMAGES:
                 return say(chat, f"الحد الأقصى {MAX_IMAGES} صورة. اضغط «{DONE}».")
             imgs.append([msg["message_id"], fid])  # message_id keeps the sending order (albums too)
+            prefetch(fid)
             if not msg.get("media_group_id") or len(imgs) % 5 == 0:
                 say(chat, f"✅ وصلت صورة {len(imgs)}")
             return
         if text == DONE:
-            return make_pdf(chat, u)
+            return ask_filename(chat, u)
+        if text == RETRY and imgs:
+            return make_pdf(chat, u, u.get("fname") or safe_name(default_name(u["draft"])))
         if text == UNDO:
             imgs.sort()
             if imgs:
                 imgs.pop()
-                return say(chat, f"انحذفت آخر صورة. صار عندك {len(imgs)} صورة.")
+                return say(chat, f"انحذفت آخر صورة. صار عندك {len(imgs)} صورة.", kb([DONE], [UNDO]))
             return say(chat, "ما في صور لسا.")
-        return say(chat, f"ابعت صورة، أو اضغط «{DONE}».")
+        return say(chat, f"ابعت صورة، أو اضغط «{DONE}».", kb([DONE], [UNDO]))
+
+    if st == "FILENAME":
+        if fid:  # she kept sending pages: take them, ask again later
+            u["images"].append([msg["message_id"], fid])
+            prefetch(fid)
+            u["state"] = "IMAGES"
+            return say(chat, f"✅ وصلت صورة {len(u['images'])}", kb([DONE], [UNDO]))
+        if not text or text.startswith("/") or (text in BUTTONS and text != RETRY):
+            return say(chat, "اكتب اسم الملف أو اختار الاسم المقترح 👇",
+                       kb([safe_name(default_name(u["draft"]))]))
+        if text == RETRY:
+            return make_pdf(chat, u, u.get("fname") or safe_name(default_name(u["draft"])))
+        u["state"] = "IMAGES"  # if the download fails, she stays here with RETRY
+        return make_pdf(chat, u, safe_name(text))
 
     return say(chat, "ابدأ بـ /start 🙂")
 
@@ -379,7 +479,7 @@ def hook():
         _save(db)
         key = str(msg["chat"]["id"])
         u = db["users"].setdefault(key, {})
-        _ctx.queue = []
+        _ctx.queue, _ctx.reply = [], None
         try:
             handle(msg, u)
         except Exception:
@@ -387,11 +487,23 @@ def hook():
         db = _load()
         db["users"][key] = u
         _save(db)
-        flush(keep_last=True)  # normally nothing: handlers send one message
+        reply, _ctx.reply = _ctx.reply, None
+        flush(keep_last=reply is None)  # normally nothing: handlers send one message
         q, _ctx.queue = _ctx.queue, None
+    if reply:
+        return reply
     if q:  # reply inside the webhook response: no outbound request, arrives instantly
         return {"method": "sendMessage", **q[-1]}
     return "ok"
+
+
+@app.route("/pdf/<key>/<name>")
+def pdf_file(key, name):
+    """Lets Telegram fetch a finished PDF when the upload through the proxy failed."""
+    path = os.path.join(PDF_DIR, f"{key}.pdf")
+    if not re.fullmatch(r"[0-9a-f]{16}", key) or not os.path.exists(path):
+        abort(404)
+    return send_file(path, mimetype="application/pdf", download_name=name)
 
 
 @app.route("/setup/<code>")
