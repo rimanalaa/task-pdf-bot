@@ -84,16 +84,19 @@ def _save(db):
 _http = requests.Session()  # reuses the proxy tunnel between calls -> far fewer 503s
 
 
-def tg(method, _tries=8, **params):
+def tg(method, _tries=3, _timeout=10, _deadline=None, **params):
     """Call the Bot API. PythonAnywhere's free proxy sometimes answers 503, so retry."""
     files = params.pop("_files", None)
     for attempt in range(_tries):
+        left = (_deadline - time.time()) if _deadline else _timeout
+        if left < 2:
+            break  # out of time: never keep Telegram waiting (it gives up after ~60 s)
         try:
             if files:
                 for f in files.values():
                     f[1].seek(0)
             r = _http.post(f"{API}/{method}", data=params if files else None,
-                              json=None if files else params, files=files, timeout=60)
+                              json=None if files else params, files=files, timeout=min(_timeout, left))
             if r.status_code >= 500 or r.status_code == 429:
                 raise requests.ConnectionError(f"HTTP {r.status_code}")
             if not r.ok:
@@ -127,7 +130,7 @@ def say(chat, text, markup=None, md=False, now=False):
     if q is None or now:
         flush()
         try:
-            return tg("sendMessage", **p)
+            return tg("sendMessage", _tries=2, _timeout=6, **p)
         except Exception:
             log.exception("sendMessage lost")
             return {}
@@ -144,7 +147,7 @@ def flush(keep_last=False):
     del q[:len(send)]
     for p in send:
         try:
-            tg("sendMessage", **p)
+            tg("sendMessage", _tries=2, _timeout=6, **p)
         except Exception:
             log.exception("sendMessage lost")
 
@@ -157,18 +160,21 @@ def _cache_path(file_id):
     return os.path.join(CACHE, hashlib.sha1(file_id.encode()).hexdigest()[:24] + ".img")
 
 
-def download(file_id, tries=10) -> bytes:
+def download(file_id, tries=10, deadline=None, timeout=12) -> bytes:
     """Bytes of a Telegram file. Cached on disk: images are fetched as they arrive, so the
     PDF step usually needs no network at all (the free proxy fails a lot)."""
     cp = _cache_path(file_id)
     if os.path.exists(cp):
         with open(cp, "rb") as f:
             return f.read()
-    info = tg("getFile", _tries=tries, file_id=file_id)
+    info = tg("getFile", _tries=tries, _timeout=timeout, _deadline=deadline, file_id=file_id)
     path = info["result"]["file_path"]
     for attempt in range(tries):
+        left = (deadline - time.time()) if deadline else timeout
+        if left < 2:
+            break
         try:
-            r = _http.get(f"{FILE_API}/{path}", timeout=40)
+            r = _http.get(f"{FILE_API}/{path}", timeout=min(timeout, left))
             r.raise_for_status()
             os.makedirs(CACHE, exist_ok=True)
             with open(cp + ".tmp", "wb") as f:
@@ -184,7 +190,7 @@ def download(file_id, tries=10) -> bytes:
 def prefetch(file_id):
     """Best-effort quick download when an image arrives (keeps replies fast)."""
     try:
-        download(file_id, tries=2)
+        download(file_id, tries=1, timeout=6)  # at most ~12 s, the reply must stay quick
     except Exception:
         pass
 
@@ -306,8 +312,9 @@ def make_pdf(chat, u, fname):
     logo_ids = [fid for _, fid in sorted(d.get("logos") or [])]
     say(chat, f"⏳ عم جهّز الـ PDF ({len(imgs)} صورة)...", NO_KB, now=True)
     try:
-        datas = [download(fid) for _, fid in imgs]
-        logos = [download(fid) for fid in logo_ids]
+        until = time.time() + 30  # whole step stays well under Telegram's ~60 s webhook limit
+        datas = [download(fid, deadline=until) for _, fid in imgs]
+        logos = [download(fid, deadline=until) for fid in logo_ids]
     except Exception as e:
         log.error("PDF download failed: %s", type(e).__name__)
         u["fname"] = fname
@@ -326,7 +333,7 @@ def make_pdf(chat, u, fname):
     caption = "جاهز ✅ بالتوفيق 🌟\nلتاسك جديد: /start"
     try:
         with open(path, "rb") as fh:
-            r = tg("sendDocument", _tries=4, chat_id=chat, caption=caption,
+            r = tg("sendDocument", _tries=2, _timeout=20, _deadline=time.time() + 20, chat_id=chat, caption=caption,
                    _files={"document": (f"{fname}.pdf", fh, "application/pdf")})
         if not r.get("ok"):
             raise RuntimeError(r.get("description"))
