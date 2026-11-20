@@ -165,37 +165,39 @@ def build_pdf(out_path, name=None, student_id=None, images=(), logos=None, docto
     if name:
         c.setAuthor(name)
 
-    # ---------- cover ----------
-    if frame:  # the frame choice covers the cover page too
-        _frame(c, W, H, 18)
-
+    # ---------- cover (only when there is something to put on it) ----------
     rows = [(lbl, v) for lbl, v in (("By:", name), ("NO:", student_id), ("Submitted to:", doctor)) if v]
     lines = [ln.strip() for ln in (title or "").splitlines() if ln.strip()][:6]
-    y = H - 70
-    if logos:
-        y = _logo_row(c, logos, y, max_h=130) - 50
-    else:
-        y -= 110 if (rows or lines) else 280
+    has_cover = bool(logos or lines or rows or year)
+    if has_cover:
+        if frame:  # the frame choice covers the cover page too
+            _frame(c, W, H, 18)
 
-    # title: one centred line each (university / department / course / LAB#1 ...)
-    for i, ln in enumerate(lines):
-        size = 26 if len(ln) <= 14 else 20 if len(ln) <= 55 else 16
-        y -= size * 0.4 if i else 0
-        _centered(c, ln, y, "Serif", size, BLACK)
-        y -= size + 12
-    y -= 40 if lines else 0
+        y = H - 70
+        if logos:
+            y = _logo_row(c, logos, y, max_h=130) - 50
+        else:
+            y -= 110 if (rows or lines) else 280
 
-    # By: / NO: / Submitted to: — label on its own line, value under it in blue
-    for label, value in rows:
-        _centered(c, label, y, "SerifB", 19, BLACK)
-        y -= 32
-        size = 22 if len(value) <= 34 else 17
-        _centered(c, value, y, "Serif", size, BLUE)
-        y -= 62
+        # title: one centred line each (university / department / course / LAB#1 ...)
+        for i, ln in enumerate(lines):
+            size = 26 if len(ln) <= 14 else 20 if len(ln) <= 55 else 16
+            y -= size * 0.4 if i else 0
+            _centered(c, ln, y, "Serif", size, BLACK)
+            y -= size + 12
+        y -= 40 if lines else 0
 
-    if year:
-        _centered(c, year, 70, "Serif", 18, BLACK)
-    c.showPage()
+        # By: / NO: / Submitted to: — label on its own line, value under it in blue
+        for label, value in rows:
+            _centered(c, label, y, "SerifB", 19, BLACK)
+            y -= 32
+            size = 22 if len(value) <= 34 else 17
+            _centered(c, value, y, "Serif", size, BLUE)
+            y -= 62
+
+        if year:
+            _centered(c, year, 70, "Serif", 18, BLACK)
+        c.showPage()
 
     # ---------- solution pages ----------
     total = len(images)
